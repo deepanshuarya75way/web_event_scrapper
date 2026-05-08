@@ -1,0 +1,12 @@
+{
+  "name": "web-summit-scraper",
+  "version": "1.0.0",
+  "description": "Scrape People list + send connection requests in Web Summit app",
+  "main": "scraper.js",
+  "scripts": {
+    "start": "node scraper.js"
+  },
+  "dependencies": {
+    "webdriverio": "^8.39.0"
+  }
+}
