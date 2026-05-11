@@ -23,10 +23,11 @@
  *   output/rate_limit.json – rate-limit cooldown state (auto-cleared)
  */
 
-const { remote } = require('webdriverio');
-const fs          = require('fs');
-const path        = require('path');
-const cfg         = require('./config');
+const { remote }    = require('webdriverio');
+const { spawnSync } = require('child_process');
+const fs            = require('fs');
+const path          = require('path');
+const cfg           = require('./config');
 
 // Ensure Android SDK env vars are set — Appium requires at least one of these.
 // We resolve from the standard macOS install path if not already exported.
@@ -195,13 +196,18 @@ async function waitForEl(driver, xpath, timeoutMs) {
 }
 
 async function waitForList(driver) {
+  // Use page source instead of XPath so filtered lists work too.
+  // With a filter active the people list's LazyColumn is NOT marked
+  // scrollable="true", so XPATH_LIST_CARDS returns nothing.
+  // Counting Avatar nodes is reliable: list = 2+, profile/dialog = 1.
   const deadline = Date.now() + cfg.timing.listTimeout;
   while (Date.now() < deadline) {
     try {
-      const els = await driver.$$(XPATH_LIST_CARDS);
-      if (els.length > 0) return true;
+      const xml = await driver.getPageSource();
+      const count = (xml.match(/content-desc="Avatar"/g) || []).length;
+      if (count >= 2) return true;
     } catch {}
-    await sleep(120);
+    await sleep(150);
   }
   return false;
 }
@@ -285,14 +291,26 @@ function extractListCards(elements) {
     if (!bestCard || usedBounds.has(bestCard.e.bounds)) continue;
     usedBounds.add(bestCard.e.bounds);
 
-    // TextViews inside card bounds, sorted top-to-bottom
+    // If the best clickable container spans too much of the screen vertically
+    // (e.g. the whole list area in a filtered view), it's a layout container,
+    // not an individual card.  In that case use Avatar-centred bounds so that:
+    //   • the tap goes to the right card (Avatar Y, not container midpoint)
+    //   • TextViews are scoped to this card's area (not the whole screen)
+    const containerHeight = bestCard.r.y2 - bestCard.r.y1;
+    const avatarHeight    = ar.y2 - ar.y1;
+    const effectiveBounds = containerHeight > avatarHeight * 3
+      ? { x1: 0,            y1: ar.y1 - 30, x2: 720,           y2: ar.y2 + 80,
+          cx:  bestCard.r.cx, cy: ar.cy }
+      : bestCard.r;
+
+    // TextViews inside effective card bounds, sorted top-to-bottom
     const tvs = elements
       .filter(e => {
         if (!e._tag.includes('TextView')) return false;
         const t = (e.text || '').trim();
         if (!t || t.toLowerCase() === 'null' || e.bounds === '[0,0][0,0]') return false;
         const r = parseBoundsRect(e.bounds);
-        return r && boundsContains(bestCard.r, r);
+        return r && boundsContains(effectiveBounds, r);
       })
       .sort((a, b) => (parseBoundsRect(a.bounds)?.y1||0) - (parseBoundsRect(b.bounds)?.y1||0));
 
@@ -301,7 +319,7 @@ function extractListCards(elements) {
       name:            tvs[0]?.text.trim() || null,
       designationLine: tvs[1]?.text.trim() || null,
       companyTag:      tvs[2]?.text.trim() || null,
-      center:          { x: bestCard.r.cx, y: bestCard.r.cy },
+      center:          { x: effectiveBounds.cx, y: effectiveBounds.cy },
     });
   }
 
@@ -561,6 +579,13 @@ async function sendConnectionMessage(driver, firstName) {
   throw new Error('RATE_LIMITED');
 }
 
+// ── Sound alert (plays on the Mac when the script stops) ─────────────────────
+
+function playDeviceSound() {
+  const alertFile = path.join(__dirname, 'alert.wav');
+  spawnSync('afplay', [alertFile], { timeout: 10000 });
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -600,6 +625,7 @@ async function main() {
     writeCSV(profiles);
     console.log(`  Profiles saved: ${profiles.size}  |  Connections sent this run: ${connectionsSentRun}`);
     if (driver) try { await driver.deleteSession(); } catch {}
+    playDeviceSound();
     process.exit(0);
   };
   process.on('SIGINT',  () => shutdown('SIGINT'));
@@ -873,10 +899,12 @@ async function main() {
 
   } finally {
     if (driver) await driver.deleteSession();
+    playDeviceSound();
   }
 }
 
-main().catch(err => {
+main().catch(async err => {
   console.error('\n✗ Fatal:', err.message);
+  playDeviceSound();
   process.exit(1);
 });
