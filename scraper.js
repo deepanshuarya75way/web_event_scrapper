@@ -279,6 +279,12 @@ function extractListCards(elements) {
     const ar = parseBoundsRect(avatar.bounds);
     if (!ar) continue;
 
+    // Skip event-banner avatars.  Person-card avatars are ~184 px wide;
+    // banner avatars (today's events strip) are ~80 px wide.
+    // Using width rather than height so partially-visible person cards
+    // (cropped at top/bottom) are still processed correctly.
+    if ((ar.x2 - ar.x1) < 120) continue;
+
     // Find smallest clickable View that fully contains this avatar
     let bestCard = null, bestArea = Infinity;
     for (const e of elements) {
@@ -315,8 +321,14 @@ function extractListCards(elements) {
       .sort((a, b) => (parseBoundsRect(a.bounds)?.y1||0) - (parseBoundsRect(b.bounds)?.y1||0));
 
     if (!tvs.length) continue;
+
+    // Secondary banner guard: event cards lead with a date/time string
+    // e.g. "Today • 12:00 pm – 12:55 pm".  Skip them regardless of avatar size.
+    const firstText = tvs[0]?.text.trim() || '';
+    if (/^(Today|Tomorrow|\w+day)\s*[•·]|\d{1,2}:\d{2}\s*(am|pm)/i.test(firstText)) continue;
+
     cards.push({
-      name:            tvs[0]?.text.trim() || null,
+      name:            firstText || null,
       designationLine: tvs[1]?.text.trim() || null,
       companyTag:      tvs[2]?.text.trim() || null,
       center:          { x: effectiveBounds.cx, y: effectiveBounds.cy },
@@ -653,6 +665,7 @@ async function main() {
 
   let staleScrolls = 0;
   let processedRun = 0;
+  let hasScrolledSuccessfully = false; // true once the list has moved at least once
   // Every card name seen this session — used to detect list-reset-to-top vs true end.
   // staleScrolls only increments when a scan reveals zero names not yet in this set.
   const seenNames   = new Set(); // all names seen (for stale-scroll detection)
@@ -865,7 +878,17 @@ async function main() {
         }
 
         const moved = await scrollListDown(driver);
-        if (!moved) {
+        if (moved) {
+          hasScrolledSuccessfully = true;
+        } else if (!hasScrolledSuccessfully) {
+          // List has never scrolled → small or filtered list with no more data.
+          // Skip pullToTop entirely: on filtered lists the downward swipe can
+          // trigger pull-to-refresh or a navigation gesture that leaves the screen.
+          console.log('\nEnd of list reached (small/filtered list — no pagination needed).');
+          break;
+        } else {
+          // List scrolled before but won't move now → try pull-to-top to
+          // trigger pagination and load the next batch.
           console.log('  (scroll returned end — pulling to top for pagination…)');
           await pullToTop(driver);
           await waitForList(driver);
@@ -874,6 +897,7 @@ async function main() {
             console.log('\nEnd of list reached (confirmed after pull-to-top).');
             break;
           }
+          hasScrolledSuccessfully = true;
           console.log('  (new data loaded after pull-to-top — continuing…)');
         }
       }
