@@ -20,7 +20,7 @@ case "$1" in
     rm -f "$SCRIPT_DIR/output/profiles.json" "$SCRIPT_DIR/output/profiles.csv"
     ;;
   --help|-h)
-    echo "Usage: ./run.sh [--reset | --help]"
+    echo "Usage: ./run.sh [--reset | --nofilter | --help]"
     exit 0
     ;;
 esac
@@ -48,4 +48,4 @@ echo "Appium started (PID $APPIUM_PID)"
 
 # ── Run scraper ───────────────────────────────────────────────
 cd "$SCRIPT_DIR"
-"$NODE" scraper.js
+"$NODE" scraper.js "$@"
